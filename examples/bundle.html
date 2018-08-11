@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="theme-color" content="#000000">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="shortcut icon" href="/favicon.ico">
+  <title>Bundle Test</title>
+</head>
+
+<body>
+  <template is="cache-entries" directory="bundle">
+    <!-- Content cached to tests/caches/bundle.html/<file> -->
+    <script file="log-current-script.js" type="text/javascript">
+      console.log('currentScript = %o', document.currentScript);
+    </script>
+    <script file="export-default-1.mjs" type="text/javascript">
+      const exported = { default: 1 };
+      console.log('export %o', exported);
+      export default exported.default;
+    </script>
+    <script file="export-default-url.mjs" type="text/javascript">
+      const exported = { default: import.meta.url }; console.log('export %o', exported); export default exported.default;
+    </script>
+    <style file="style.css" type="text/css">
+      @import "theme.css";
+      .styled {
+        color: var(--color, red);
+      }
+    </style>
+    <style file="theme.css" type="text/css">
+      :root {
+        --color: green;
+      }
+
+      .styled.blue {
+        --color: blue;
+      }
+    </style>
+    <template file="index.html" type="text/html">
+      <html>
+
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+        <meta name="theme-color" content="#000000">
+        <link rel="manifest" href="/manifest.json">
+        <link rel="shortcut icon" href="/favicon.ico">
+        <script type="text/javascript" src="log-current-script.js"></script>
+        <script type="module" src="export-default-1.mjs"></script>
+        <script type="module" src="export-default-url.mjs"></script>
+        <link rel="stylesheet" href="style.css" />
+      </head>
+
+      <body>
+        <p class="styled">Styled</p>
+        <p class="styled blue">Styled Blue</p>
+      </body>
+
+      </html>
+    </template>
+    <!-- End of content cached to tests/caches/bundle.html/<file> -->
+  </template>
+  <script src="./caches.js">
+  /**
+   * Caches is an isomorphic Service Worker client and worker, designed to
+   * service back content which is cached by the client or other service
+   * workers. This pattern minimizes the chances of cache-lapses caused from
+   * out-of-sync loads.
+   */
+  </script>
+  <script>
+    /**
+     * Bundles is a browser-side proof of concept which populates caches then
+     * loads the entry into a partial-sandboxed (or not) iframe. Different
+     * implementation criteria will be needed between development and
+     * production environments, and the notion of using HTMLTemplates is simple
+     * one idea for declarative content.
+     */
+    {
+      // TODO: Begin working on actual prototype
+
+      const filename = location.pathname.replace(/^.*[/]/, '');
+      const base = new URL(`./caches/${filename}/`, location);
+      const scope = base.pathname;
+      const defaultCache = self.caches.open('default');
+
+      const { freeze, defineProperty, defineProperties, getOwnPropertyDescriptors, getPrototypeOf } = Object;
+
+      const contentElementFrom = element =>
+        element && element.content || element || null;
+
+      const attribute = (element, name, value) => {
+        try {
+          if (value === null) element.removeAttribute(name);
+          else if (value !== undefined) element.setAttribute(name, value);
+          return element.getAttribute(name);
+        } catch (exception) {
+          return null;
+        }
+      }
+
+      const define = (object, property, value, writable = false, configurable = true) => {
+        return object && property
+          ? defineProperty(object, property, { value, writable, configurable })[property] : value;
+      }
+
+      class Entry {
+        constructor(properties) {
+          Object.assign(this, properties);
+        }
+
+        static from(element) {
+          const content = contentElementFrom(element);
+          if (!content) return;
+          const file = attribute(element, 'file');
+          const directory = !file && attribute(element, 'directory');
+          const name = file || directory;
+          if (!name) return;
+          const tag = element.localName;
+          const type = directory ? 'directory' : attribute(element, 'type');
+          return new (this || Entry)({ name, type, tag, element, content });
+        }
+
+        get entries() {
+          if (!this.type) return;
+          return define(this, 'entries', this.type === 'directory' && Entries.from(this) || undefined);
+        }
+
+        get body() {
+          const type = this.type;
+          if (type && type !== 'directory') {
+            const content = contentElementFrom(this);
+            if (content && 'innerHTML' in content) return content.innerHTML;
+            const element = this.element;
+            if (element && 'innerHTML' in element) return element.innerHTML;
+          }
+        }
+      }
+
+      class Entries extends Map {
+        constructor(properties, entries) {
+          super(entries || properties && properties.entries || undefined);
+          Object.assign(this, properties);
+        }
+
+        static from(element, properties) {
+          const content = contentElementFrom(element);
+          if (!content) return;
+          const entries = new (this || Entries)({ element, content });
+          for (const element of content.children) {
+            const entry = Entry.from(element);
+            entry && entries.set(entry.name, entry);
+          }
+          return entries;
+        }
+      }
+
+
+      class CacheEntries extends HTMLTemplateElement {
+        get entries() { return Entries.from(this); }
+        put() { return CacheEntries.put(this); }
+
+        static async put(cacheEntries) {
+          const cache = await defaultCache;
+          const entries = Entries.from(cacheEntries);
+          for (const [name, entry] of entries) {
+            if (entry.body === undefined) continue;
+            const { type, body } = entry;
+            let operation = body === null ? 'delete' : 'put';
+            const src = entry.src = new URL(name, base).pathname;
+            // console.log(`[cache] %s <%s> %o`, operation, src, entry);
+            await CacheEntries.cache(cache, src, body, type);
+          }
+          return entries;
+        }
+
+        static async caches(key) {
+          const caches = CacheEntries.caches;
+          return await (caches[key] || (caches[key] = self.caches.open(key)));
+        }
+
+        static async cache(cache, path, data, type = 'text/plain') {
+          if (!cache || data === undefined || !path) return;
+          const record = {};
+
+          try {
+            cache = record.cache = await (typeof cache === 'string' && (cache = caches(cache)) || cache);
+            if (!data) return cache.delete(path);
+            const init = record.init = { headers: { 'Content-Type': type } };
+            record.data = typeof data === 'string' || (data = JSON.stringify(data));
+            const blob = record.data = new Blob([data], { type });
+            const response = record.response = new Response(blob, init);
+            await cache.put(path, response);
+            const cached = record.cached = true;
+          } catch (exception) {
+            record.error = exception;
+          }
+
+          return record;
+        }
+
+        static in(root) {
+          const tag = this.hasOwnProperty('tag') ? this.tag : define(this, 'tag', this.constructor.name.replace(/[a-z](?=A-Z)/g, '$1-').toLowerCase());
+          if (tag) return root.querySelectorAll(`[is=${tag}]`);
+        }
+
+        static then(ƒ) {
+          if (!this.hasOwnProperty('defined')) {
+            const tag = this.hasOwnProperty('tag') ? this.tag : define(this, 'tag', this.constructor.name.replace(/[a-z](?=A-Z)/g, '$1-').toLowerCase());
+            const promise = tag && define(this, 'defined', customElements.whenDefined(tag));
+            if (!promise) throw ReferenceError(`When defined requires a Custom Element with a valid tag property or class name`);
+            return promise.then(ƒ);
+          } else {
+            return this.defined.then(ƒ);
+          }
+        }
+
+      }
+
+      customElements.define(CacheEntries.tag = 'cache-entries', CacheEntries, { extends: CacheEntries.extends = 'template' });
+
+      const open = ({
+        src, srcdoc,
+        container = document.body, frame = document.createElement('iframe'),
+      }) => {
+        frame.src = src;
+        // frame.srcdoc = srcdoc;
+        if (!frame.isConnected) {
+          // frame.frameBorder = true;
+          frame.style.width = '100%';
+          frame.sandbox = "allow-same-origin allow-scripts";
+        }
+        frame.isConnected || container.appendChild(frame);
+        return frame;
+      }
+
+      (async () => {
+        await CacheEntries; // customElements.whenDefined(CacheEntries.tag);
+        await navigator.serviceWorker.ready;
+
+        const cacheEntries = CacheEntries.in(document);
+        const fetched = {};
+
+        for (const cacheEntry of cacheEntries) {
+          const entries = await CacheEntries.put(cacheEntry);
+          let index;
+          for (const [name, entry] of entries) {
+            const src = entry.src;
+            try {
+              const response = fetched[name] = await fetch(src);
+              const srcdoc = fetched[name].text = await response.text();
+              if (name === 'index.html') index = { src, srcdoc };
+            } catch (exception) {
+              fetched[name] = exception;
+            }
+          }
+          console.log(`[Client %O %s] %o`, cacheEntry, 'cached', entries);
+          if (index) open(index);
+        }
+        // console.log(`[Client %s] %o`, 'fetched', fetched);
+      })()
+    }
+  </script>
+
+  <noscript>
+    You need to enable JavaScript to run this app.
+  </noscript>
+
+  <h1>Client-driven Service-Worker</h1>
+
+  <p>This demonstrates the potential for development and production payload modularization using Service Workers and client-side
+    Caches.
+  </p>
+
+  <p>At the moment Chrome and Firefox seem to have implemented the necessary aspects of the underlaying specifications, but
+    there are signals that Safari's implementation will also be on par.</p>
+
+  <p>This demo is the product of the amazing prior and very detailed work done by the folks Mozilla's
+    <a href="https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API" target="_blank">MDN</a> and
+    <a href="https://serviceworke.rs/" target="_blank">serviceworke.rs</a>. In contrast, the goal of this work is to replace scaffolding and minimize cognitive dissonance of
+    the work it takes to get up and running.</p>
+</body>
+
+</html>
